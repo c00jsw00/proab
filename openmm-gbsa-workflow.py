@@ -261,7 +261,8 @@ def run_gbsa_md(pdb_file, disulfide_bonds, output_prefix, temperature=300, sim_t
     for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
         print(f"添加二硫键: Chain {chain_id1+1} Res {resid1} - Chain {chain_id2+1} Res {resid2}")
         #modeller.addDisulfideBond(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')
-        modeller.addDisulfideBonds([(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')])            
+        #modeller.addDisulfideBonds([(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')])  
+        modeller.addDisulfideBond(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')
     
     # 创建系统
     system = forcefield.createSystem(
