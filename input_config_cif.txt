@@ -1,6 +1,5 @@
 # PDB Files
 pdb_files:
-pred.model_idx_4.cif
 pred.rank_0.cif
 pred.rank_1.cif
 pred.rank_2.cif
