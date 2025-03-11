@@ -300,8 +300,8 @@ def main():
                 for cdr in ['CDR-H1', 'CDR-H2', 'CDR-H3', 'CDR-L1', 'CDR-L2', 'CDR-L3']:
                     row.append(f"{blocking_rates.get(cdr, 0):.1f}")
                 row.append(f"{blocking_rates.get('total', 0):.1f}")
-                row.append(f"{pasa_results.get('H', 0):.2f}")
-                row.append(f"{pasa_results.get('L', 0):.2f}")
+                row.append(f"{pasa_results.get('A', 0):.2f}")
+                row.append(f"{pasa_results.get('B', 0):.2f}")
                 row.append(f"{pasa_results.get('total', 0):.2f}")
                 csv_data.append(row)
                 
