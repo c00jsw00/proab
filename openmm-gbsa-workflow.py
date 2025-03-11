@@ -151,12 +151,12 @@ import argparse
 import csv
 from collections import defaultdict
 from datetime import datetime
-from simtk import unit
-from simtk.openmm import app
-import simtk.openmm as mm
-from simtk.openmm.app import PDBFile, PDBxFile, ForceField, Simulation, StateDataReporter
-from simtk.openmm.app import Modeller, OBC2, HBonds, AllBonds
-from simtk.openmm.app import CutoffNonPeriodic, PME
+from openmm import unit
+from openmm import app
+import openmm as mm
+from openmm.app import PDBFile, PDBxFile, ForceField, Simulation, StateDataReporter
+from openmm.app import Modeller, OBC2, HBonds, AllBonds
+from openmm.app import CutoffNonPeriodic, PME
 import mdtraj as md
 import Bio.PDB
 from Bio.PDB import PDBIO, MMCIFParser
