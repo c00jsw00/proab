@@ -250,60 +250,74 @@ def run_gbsa_md(pdb_file, disulfide_bonds, output_prefix, temperature=300, sim_t
     # 读取PDB结构
     pdb = PDBFile(pdb_file)
     
-    # 创建力场
-    # 使用amber14-all蛋白质力场和隐式溶剂力场
-    forcefield = ForceField('amber14-all.xml', 'amber14/tip3pfb.xml')
-    
     # 创建模型系统
     modeller = Modeller(pdb.topology, pdb.positions)
     
-    # 添加二硫键
-    #for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
-        #print(f"添加二硫键: Chain {chain_id1+1} Res {resid1} - Chain {chain_id2+1} Res {resid2}")
-        #modeller.addDisulfideBond(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')
-        #modeller.addDisulfideBonds([(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')])  
-        #modeller.addDisulfideBond(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')
-    for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
-        print(f"添加二硫键: Chain {chain_id1+1} Res {resid1} - Chain {chain_id2+1} Res {resid2}")
-        # 对应于OpenMM的API，该方法应该是在Modeller上找到的
-        try:
-            chain1 = f'{chain_id1+1}'  # 将0-based索引转换为1-based索引
-            chain2 = f'{chain_id2+1}'
-            modeller.addDisulfideBond(f'{chain1}:{resid1}', f'{chain2}:{resid2}')
-        except AttributeError:
-            # 如果方法名不正确，尝试其他可能的方法名
+    # 添加氢原子 - 这是关键修复
+    print("添加缺失的氢原子...")
+    modeller.addHydrogens(forcefield=ForceField('amber14-all.xml', 'amber14/tip3pfb.xml'))
+    
+    # 保存添加了氢原子的结构
+    with open(f'{output_prefix}_with_hydrogens.pdb', 'w') as f:
+        PDBFile.writeFile(modeller.topology, modeller.positions, f)
+    print(f"已保存添加氢原子后的结构到 {output_prefix}_with_hydrogens.pdb")
+    
+    # 处理二硫键
+    if disulfide_bonds:
+        print("处理二硫键...")
+        for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
             try:
-                # 尝试添加单个二硫键
-                print("尝试使用替代方法添加二硫键...")
-                # 查找相关残基
-                residue1 = None
-                residue2 = None
+                # 尝试找到两个半胱氨酸残基
+                cys1 = None
+                cys2 = None
+                chain1 = str(chain_id1 + 1)  # 将0-based转为1-based
+                chain2 = str(chain_id2 + 1)
+                
                 for res in modeller.topology.residues():
                     if res.chain.id == chain1 and res.id == str(resid1):
-                        residue1 = res
+                        cys1 = res
                     if res.chain.id == chain2 and res.id == str(resid2):
-                        residue2 = res
+                        cys2 = res
                 
-                if residue1 and residue2:
-                    # 手动查找硫原子并计算距离
-                    for atom1 in residue1.atoms():
-                        if atom1.name == 'SG':
-                            for atom2 in residue2.atoms():
-                                if atom2.name == 'SG':
-                                    print(f"找到了硫原子: {atom1} - {atom2}")
+                if cys1 and cys2:
+                    print(f"找到残基: Chain {chain1} Res {resid1} 和 Chain {chain2} Res {resid2}")
+                    # 将残基名修改为CYX (用于二硫键的半胱氨酸)
+                    cys1.name = 'CYX'
+                    cys2.name = 'CYX'
+                    print(f"已将残基名称修改为CYX以便于二硫键形成")
+                else:
+                    print(f"警告: 未找到指定的半胱氨酸残基 Chain {chain1} Res {resid1} 或 Chain {chain2} Res {resid2}")
             except Exception as e:
-                print(f"添加二硫键时出错: {e}")
-                print("将继续而不添加二硫键。")
-   
+                print(f"处理二硫键时出错: {e}")
+    
+    # 创建力场
+    forcefield = ForceField('amber14-all.xml', 'amber14/tip3pfb.xml')
+    
     # 创建系统
-    system = forcefield.createSystem(
-        modeller.topology, 
-        nonbondedMethod=CutoffNonPeriodic,
-        nonbondedCutoff=1.0*unit.nanometer,
-        constraints=HBonds,
-        implicitSolvent=OBC2,
-        implicitSolventSaltConc=0.15*unit.mole/unit.liter
-    )
+    try:
+        system = forcefield.createSystem(
+            modeller.topology, 
+            nonbondedMethod=CutoffNonPeriodic,
+            nonbondedCutoff=1.0*unit.nanometer,
+            constraints=HBonds,
+            implicitSolvent=OBC2,
+            implicitSolventSaltConc=0.15*unit.mole/unit.liter
+        )
+    except ValueError as e:
+        print(f"创建系统时出错: {e}")
+        print("尝试不使用二硫键创建系统...")
+        # 尝试重新创建模型并添加氢原子，但不进行二硫键处理
+        modeller = Modeller(pdb.topology, pdb.positions)
+        modeller.addHydrogens(forcefield=ForceField('amber14-all.xml', 'amber14/tip3pfb.xml'))
+        
+        system = forcefield.createSystem(
+            modeller.topology, 
+            nonbondedMethod=CutoffNonPeriodic,
+            nonbondedCutoff=1.0*unit.nanometer,
+            constraints=HBonds,
+            implicitSolvent=OBC2,
+            implicitSolventSaltConc=0.15*unit.mole/unit.liter
+        )
     
     # 添加Langevin积分器
     integrator = mm.LangevinMiddleIntegrator(
@@ -368,6 +382,16 @@ def run_gbsa_md(pdb_file, disulfide_bonds, output_prefix, temperature=300, sim_t
     app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_final.pdb', 'w'))
     
     print("模拟完成！")
+
+ 
+
+
+    
+
+
+ 
+    
+
 
 def analyze_trajectory(trajectory_file, topology_file, output_prefix):
     """
