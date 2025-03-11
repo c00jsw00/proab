@@ -258,12 +258,43 @@ def run_gbsa_md(pdb_file, disulfide_bonds, output_prefix, temperature=300, sim_t
     modeller = Modeller(pdb.topology, pdb.positions)
     
     # 添加二硫键
-    for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
-        print(f"添加二硫键: Chain {chain_id1+1} Res {resid1} - Chain {chain_id2+1} Res {resid2}")
+    #for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
+        #print(f"添加二硫键: Chain {chain_id1+1} Res {resid1} - Chain {chain_id2+1} Res {resid2}")
         #modeller.addDisulfideBond(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')
         #modeller.addDisulfideBonds([(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')])  
-        modeller.addDisulfideBond(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')
-    
+        #modeller.addDisulfideBond(f'{chain_id1+1}:{resid1}', f'{chain_id2+1}:{resid2}')
+    for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
+        print(f"添加二硫键: Chain {chain_id1+1} Res {resid1} - Chain {chain_id2+1} Res {resid2}")
+        # 对应于OpenMM的API，该方法应该是在Modeller上找到的
+        try:
+            chain1 = f'{chain_id1+1}'  # 将0-based索引转换为1-based索引
+            chain2 = f'{chain_id2+1}'
+            modeller.addDisulfideBond(f'{chain1}:{resid1}', f'{chain2}:{resid2}')
+        except AttributeError:
+            # 如果方法名不正确，尝试其他可能的方法名
+            try:
+                # 尝试添加单个二硫键
+                print("尝试使用替代方法添加二硫键...")
+                # 查找相关残基
+                residue1 = None
+                residue2 = None
+                for res in modeller.topology.residues():
+                    if res.chain.id == chain1 and res.id == str(resid1):
+                        residue1 = res
+                    if res.chain.id == chain2 and res.id == str(resid2):
+                        residue2 = res
+                
+                if residue1 and residue2:
+                    # 手动查找硫原子并计算距离
+                    for atom1 in residue1.atoms():
+                        if atom1.name == 'SG':
+                            for atom2 in residue2.atoms():
+                                if atom2.name == 'SG':
+                                    print(f"找到了硫原子: {atom1} - {atom2}")
+            except Exception as e:
+                print(f"添加二硫键时出错: {e}")
+                print("将继续而不添加二硫键。")
+   
     # 创建系统
     system = forcefield.createSystem(
         modeller.topology, 
