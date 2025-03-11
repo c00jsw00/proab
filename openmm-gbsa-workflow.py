@@ -213,6 +213,155 @@ def fix_structure_and_add_ssbonds(input_file, output_pdb):
     
     return potential_bonds
 
+
+def prepare_structure_for_md(input_file, output_pdb, disulfide_bonds=None):
+    """
+    准备结构用于分子动力学模拟，修复常见问题
+    
+    Parameters
+    ----------
+    input_file : str
+        输入的结构文件路径（CIF或PDB格式）
+    output_pdb : str
+        输出的修正后PDB文件路径
+    disulfide_bonds : list, optional
+        二硫键残基对列表
+        
+    Returns
+    -------
+    str
+        准备好的结构文件路径
+    """
+    from Bio.PDB import PDBParser, PDBIO, Select
+    from Bio.PDB.Polypeptide import is_aa
+    import os
+    import tempfile
+    import subprocess
+    
+    print(f"准备结构用于MD模拟: {input_file}")
+    
+    # 1. 使用BioPython读取并清理结构
+    temp_pdb = tempfile.NamedTemporaryFile(suffix='.pdb', delete=False).name
+    
+    if input_file.endswith('.cif'):
+        # 如果是CIF文件，先转换为PDB
+        from Bio.PDB import MMCIFParser
+        parser = MMCIFParser(QUIET=True)
+        structure = parser.get_structure('structure', input_file)
+    else:
+        # 否则直接读取PDB
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure('structure', input_file)
+    
+    # 创建一个选择器，只保留蛋白质部分
+    class ProteinSelect(Select):
+        def accept_residue(self, residue):
+            # 只接受氨基酸残基
+            if is_aa(residue):
+                return 1
+            else:
+                return 0
+    
+    # 保存清理后的结构
+    io = PDBIO()
+    io.set_structure(structure)
+    io.save(temp_pdb, ProteinSelect())
+    
+    print(f"已清理结构并保存到临时文件: {temp_pdb}")
+    
+    # 2. 使用pdbfixer处理结构
+    # 如果系统中有pdbfixer，则使用它进行进一步清理
+    fixed_pdb = output_pdb
+    try:
+        from pdbfixer import PDBFixer
+        from simtk.openmm.app import PDBFile
+        
+        print("使用PDBFixer修复结构...")
+        fixer = PDBFixer(filename=temp_pdb)
+        
+        # 查找缺失残基
+        fixer.findMissingResidues()
+        
+        # 添加缺失的原子
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        
+        # 添加缺失的氢原子
+        fixer.addMissingHydrogens(7.0)  # pH 7.0
+        
+        # 处理二硫键
+        if disulfide_bonds:
+            print("添加二硫键...")
+            # 清除自动检测的二硫键
+            fixer.disulfideBonds = []
+            
+            # 添加指定的二硫键
+            for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
+                chain1 = str(chain_id1 + 1) if isinstance(chain_id1, int) else chain_id1
+                chain2 = str(chain_id2 + 1) if isinstance(chain_id2, int) else chain_id2
+                
+                res1 = (chain1, resid1)
+                res2 = (chain2, resid2)
+                
+                # 检查残基是否存在于结构中
+                found1 = False
+                found2 = False
+                for chain in fixer.topology.chains():
+                    if chain.id == chain1:
+                        for residue in chain.residues():
+                            if residue.id == str(resid1):
+                                found1 = True
+                    if chain.id == chain2:
+                        for residue in chain.residues():
+                            if residue.id == str(resid2):
+                                found2 = True
+                
+                if found1 and found2:
+                    fixer.disulfideBonds.append((res1, res2))
+                    print(f"添加二硫键: Chain {chain1} Res {resid1} - Chain {chain2} Res {resid2}")
+                else:
+                    print(f"警告: 未找到用于二硫键的残基 Chain {chain1} Res {resid1} 或 Chain {chain2} Res {resid2}")
+        
+        # 保存修复后的结构
+        with open(fixed_pdb, 'w') as f:
+            PDBFile.writeFile(fixer.topology, fixer.positions, f)
+        
+        print(f"结构已修复并保存到: {fixed_pdb}")
+    
+    except ImportError:
+        print("PDBFixer未安装，尝试使用替代方法...")
+        # 如果没有pdbfixer，使用OpenMM的Modeller直接添加氢原子
+        try:
+            from simtk.openmm.app import PDBFile, Modeller, ForceField
+            
+            print("使用OpenMM Modeller添加氢原子...")
+            pdb = PDBFile(temp_pdb)
+            modeller = Modeller(pdb.topology, pdb.positions)
+            
+            # 尝试添加氢原子，但不使用力场（避免模板匹配问题）
+            modeller.addHydrogens()
+            
+            # 保存修复后的结构
+            with open(fixed_pdb, 'w') as f:
+                PDBFile.writeFile(modeller.topology, modeller.positions, f)
+            
+            print(f"已添加氢原子并保存到: {fixed_pdb}")
+        
+        except Exception as e:
+            print(f"使用OpenMM Modeller时出错: {e}")
+            print("将使用原始结构进行后续处理...")
+            # 如果都失败了，至少保留清理后的结构
+            import shutil
+            shutil.copy(temp_pdb, fixed_pdb)
+    
+    # 清理临时文件
+    try:
+        os.remove(temp_pdb)
+    except:
+        pass
+    
+    return fixed_pdb
+
 def run_gbsa_md(pdb_file, disulfide_bonds, output_prefix, temperature=300, sim_time=10, report_interval=10000, 
                 dcd_interval=10000, min_steps=5000, equil_steps=100000):
     """
@@ -240,6 +389,10 @@ def run_gbsa_md(pdb_file, disulfide_bonds, output_prefix, temperature=300, sim_t
         平衡步数，默认为100000步
     """
     # 设置单位
+    from openmm import unit
+    from openmm import app
+    import openmm as mm
+    
     temperature = temperature * unit.kelvin
     step_size = 2.0 * unit.femtoseconds
     sim_time = sim_time * unit.nanoseconds
@@ -247,151 +400,103 @@ def run_gbsa_md(pdb_file, disulfide_bonds, output_prefix, temperature=300, sim_t
     # 计算总步数
     total_steps = int(sim_time / step_size)
     
-    # 读取PDB结构
-    pdb = PDBFile(pdb_file)
+    # 首先准备结构
+    print(f"准备输入结构: {pdb_file}")
+    prepared_pdb = f"{output_prefix}_prepared.pdb"
+    prepared_pdb = prepare_structure_for_md(pdb_file, prepared_pdb, disulfide_bonds)
     
-    # 创建模型系统
-    modeller = Modeller(pdb.topology, pdb.positions)
-    
-    # 添加氢原子 - 这是关键修复
-    print("添加缺失的氢原子...")
-    modeller.addHydrogens(forcefield=ForceField('amber14-all.xml', 'amber14/tip3pfb.xml'))
-    
-    # 保存添加了氢原子的结构
-    with open(f'{output_prefix}_with_hydrogens.pdb', 'w') as f:
-        PDBFile.writeFile(modeller.topology, modeller.positions, f)
-    print(f"已保存添加氢原子后的结构到 {output_prefix}_with_hydrogens.pdb")
-    
-    # 处理二硫键
-    if disulfide_bonds:
-        print("处理二硫键...")
-        for chain_id1, resid1, chain_id2, resid2 in disulfide_bonds:
-            try:
-                # 尝试找到两个半胱氨酸残基
-                cys1 = None
-                cys2 = None
-                chain1 = str(chain_id1 + 1)  # 将0-based转为1-based
-                chain2 = str(chain_id2 + 1)
-                
-                for res in modeller.topology.residues():
-                    if res.chain.id == chain1 and res.id == str(resid1):
-                        cys1 = res
-                    if res.chain.id == chain2 and res.id == str(resid2):
-                        cys2 = res
-                
-                if cys1 and cys2:
-                    print(f"找到残基: Chain {chain1} Res {resid1} 和 Chain {chain2} Res {resid2}")
-                    # 将残基名修改为CYX (用于二硫键的半胱氨酸)
-                    cys1.name = 'CYX'
-                    cys2.name = 'CYX'
-                    print(f"已将残基名称修改为CYX以便于二硫键形成")
-                else:
-                    print(f"警告: 未找到指定的半胱氨酸残基 Chain {chain1} Res {resid1} 或 Chain {chain2} Res {resid2}")
-            except Exception as e:
-                print(f"处理二硫键时出错: {e}")
-    
-    # 创建力场
-    forcefield = ForceField('amber14-all.xml', 'amber14/tip3pfb.xml')
-    
-    # 创建系统
     try:
-        system = forcefield.createSystem(
-            modeller.topology, 
-            nonbondedMethod=CutoffNonPeriodic,
-            nonbondedCutoff=1.0*unit.nanometer,
-            constraints=HBonds,
-            implicitSolvent=OBC2,
-            implicitSolventSaltConc=0.15*unit.mole/unit.liter
-        )
-    except ValueError as e:
-        print(f"创建系统时出错: {e}")
-        print("尝试不使用二硫键创建系统...")
-        # 尝试重新创建模型并添加氢原子，但不进行二硫键处理
-        modeller = Modeller(pdb.topology, pdb.positions)
-        modeller.addHydrogens(forcefield=ForceField('amber14-all.xml', 'amber14/tip3pfb.xml'))
+        # 读取PDB结构
+        pdb = app.PDBFile(prepared_pdb)
         
+        # 创建力场
+        print("创建力场...")
+        forcefield = app.ForceField('amber14-all.xml', 'amber14/tip3pfb.xml')
+        
+        # 创建模型系统，但不再添加氢原子（已在准备阶段添加）
+        modeller = app.Modeller(pdb.topology, pdb.positions)
+        
+        # 创建系统
+        print("创建系统...")
         system = forcefield.createSystem(
             modeller.topology, 
-            nonbondedMethod=CutoffNonPeriodic,
+            nonbondedMethod=app.CutoffNonPeriodic,
             nonbondedCutoff=1.0*unit.nanometer,
-            constraints=HBonds,
-            implicitSolvent=OBC2,
+            constraints=app.HBonds,
+            implicitSolvent=app.OBC2,
             implicitSolventSaltConc=0.15*unit.mole/unit.liter
         )
-    
-    # 添加Langevin积分器
-    integrator = mm.LangevinMiddleIntegrator(
-        temperature, 
-        1.0/unit.picosecond, 
-        step_size
-    )
-    
-    # 创建模拟对象
-    simulation = Simulation(modeller.topology, system, integrator)
-    simulation.context.setPositions(modeller.positions)
-    
-    # 设置报告器
-    simulation.reporters.append(
-        StateDataReporter(
-            f'{output_prefix}_data.csv', 
-            report_interval, 
-            step=True, 
-            time=True, 
-            potentialEnergy=True, 
-            kineticEnergy=True, 
-            totalEnergy=True, 
-            temperature=True
+        
+        # 添加Langevin积分器
+        integrator = mm.LangevinMiddleIntegrator(
+            temperature, 
+            1.0/unit.picosecond, 
+            step_size
         )
-    )
-    
-    # 设置轨迹报告器
-    simulation.reporters.append(
-        app.DCDReporter(
-            f'{output_prefix}_trajectory.dcd', 
-            dcd_interval
+        
+        # 创建模拟对象
+        simulation = app.Simulation(modeller.topology, system, integrator)
+        simulation.context.setPositions(modeller.positions)
+        
+        # 设置报告器
+        simulation.reporters.append(
+            app.StateDataReporter(
+                f'{output_prefix}_data.csv', 
+                report_interval, 
+                step=True, 
+                time=True, 
+                potentialEnergy=True, 
+                kineticEnergy=True, 
+                totalEnergy=True, 
+                temperature=True
+            )
         )
-    )
+        
+        # 设置轨迹报告器
+        simulation.reporters.append(
+            app.DCDReporter(
+                f'{output_prefix}_trajectory.dcd', 
+                dcd_interval
+            )
+        )
+        
+        # 保存初始结构
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_initial.pdb', 'w'))
+        
+        # 能量最小化
+        print("执行能量最小化...")
+        simulation.minimizeEnergy(maxIterations=min_steps)
+        
+        # 保存最小化后的结构
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_minimized.pdb', 'w'))
+        
+        # 平衡模拟
+        print(f"执行平衡模拟（{equil_steps}步）...")
+        simulation.context.setVelocitiesToTemperature(temperature)
+        simulation.step(equil_steps)
+        
+        # 保存平衡后的结构
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_equilibrated.pdb', 'w'))
+        
+        # 生产模拟
+        print(f"执行生产模拟（{total_steps}步，{sim_time.value_in_unit(unit.nanoseconds):.1f} ns）...")
+        simulation.step(total_steps)
+        
+        # 保存最终结构
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_final.pdb', 'w'))
+        
+        print("模拟完成！")
+        return True
     
-    # 保存初始结构
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_initial.pdb', 'w'))
-    
-    # 能量最小化
-    print("执行能量最小化...")
-    simulation.minimizeEnergy(maxIterations=min_steps)
-    
-    # 保存最小化后的结构
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_minimized.pdb', 'w'))
-    
-    # 平衡模拟
-    print(f"执行平衡模拟（{equil_steps}步）...")
-    simulation.context.setVelocitiesToTemperature(temperature)
-    simulation.step(equil_steps)
-    
-    # 保存平衡后的结构
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_equilibrated.pdb', 'w'))
-    
-    # 生产模拟
-    print(f"执行生产模拟（{total_steps}步，{sim_time.value_in_unit(unit.nanoseconds):.1f} ns）...")
-    simulation.step(total_steps)
-    
-    # 保存最终结构
-    positions = simulation.context.getState(getPositions=True).getPositions()
-    app.PDBFile.writeFile(simulation.topology, positions, open(f'{output_prefix}_final.pdb', 'w'))
-    
-    print("模拟完成！")
-
- 
-
-
-    
-
-
- 
-    
-
+    except Exception as e:
+        print(f"运行模拟时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False 
 
 def analyze_trajectory(trajectory_file, topology_file, output_prefix):
     """
