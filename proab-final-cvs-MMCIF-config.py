@@ -219,11 +219,7 @@ class ProAntibodyAnalyzer:
                 results[chain_id] = area
             
             # Calculate total PASA as minimum of chain PASAs
-            #results['total'] = min(results.values()) if results else 0
-            if 'H' in results and 'L' in results:
-                results['total'] = results['H'] + results['L']
-            else:
-                results['total'] = 0
+            results['total'] = min(results.values()) if results else 0
                 
         except Exception as e:
             print(f"Error calculating SASA: {e}")
