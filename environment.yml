@@ -55,4 +55,4 @@ dependencies:
     - pytz==2025.1
     - six==1.17.0
     - tzdata==2025.1
-prefix: /home/c00jsw00/.conda/envs/proab
+prefix: 
